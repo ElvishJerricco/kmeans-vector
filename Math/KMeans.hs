@@ -2,6 +2,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
 Module      :  Math.KMeans
@@ -32,9 +33,9 @@ module Math.KMeans
   , euclidSq
   , l1dist
   , linfdist
+  , coordCentroid
   ) where
 
-import Control.Monad.Identity
 import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector as G
 import qualified Data.List as L
@@ -111,13 +112,14 @@ partition k vs = G.fromList $ go vs
 -- Extracting features just means getting a 'V.Vector'
 -- with 'Double' coordinates that will represent your type
 -- in the space in which 'kmeans' will run.
-kmeans :: (a -> V.Vector Double) -- ^ feature extraction
-       -> Distance               -- ^ distance function
-       -> Int                    -- ^ the 'k' to run 'k'-means with (i.e number of desired clusters)
-       -> [a]                    -- ^ input list of 'points'
-       -> Clusters a             -- ^ result, hopefully 'k' clusters of points
-kmeans extract dist k points = 
-  runIdentity $ kmeansWith (\n ps -> return $ partition n ps) extract dist k points
+kmeans
+  :: (a -> V.Vector Double) -- ^ feature extraction
+  -> Distance               -- ^ distance function
+  -> Int                    -- ^ the 'k' to run 'k'-means with (i.e number of desired clusters)
+  -> [a]                    -- ^ input list of 'points'
+  -> Clusters a             -- ^ result, hopefully 'k' clusters of points
+kmeans extract dist k points =
+  kmeansWith (partition k points) (coordCentroid extract) (\a c -> dist (extract a) c) points
 
 -- | Same as 'kmeans', except that instead of using 'partition', you supply your own
 --   function for choosing the initial clustering. Two important things to note:
@@ -134,47 +136,40 @@ kmeans extract dist k points =
 --     probably be 'IO' or 'ST' (e.g using my <http://hackage.haskell.org/package/probable probable> package)
 --     and you could fine-tune the way the initial clusters are picked so that the algorithm
 --     may give better results. Of course, if your initialization is monadic, so is the result. 
-kmeansWith :: Monad m
-           => (Int -> [a] -> m (Clusters a)) -- ^ how should we partition the points?
-           -> (a -> V.Vector Double)         -- ^ get the coordinates of a "point"
-           -> Distance                       -- ^ what distance do we use
-           -> Int                            -- ^ number of desired clusters
-           -> [a]                            -- ^ list of points
-           -> m (Clusters a)                 -- ^ resulting clustering
-kmeansWith initF extract dist k points = go `liftM` initF k points
+kmeansWith
+  :: forall a c d. (Eq c, Ord d)
+  => Clusters a -- ^ initial clusters
+  -> (Cluster a -> c) -- ^ centroid of a cluster
+  -> (a -> c -> d) -- ^ distance between a point and a centroid
+  -> [a] -- ^ list of points
+  -> Clusters a -- ^ resulting clustering
+kmeansWith initial centroidOf dist points = go (G.map centroidOf initial) initial
   
-  where 
-    -- go :: Clusters a -> Clusters a
-    go pgroups =
+  where
+    k :: Int
+    k = G.length initial
+
+    go :: G.Vector c -> Clusters a -> Clusters a
+    go centroids pgroups =
       case kmeansStep pgroups of
-        pgroups' | pgroupsEqualUnder pgroups pgroups'  -> pgroups
-                 | otherwise -> go pgroups' 
+        (centroids', pgroups') | centroids == centroids' -> pgroups
+                               | otherwise -> go centroids' pgroups' 
 
-    -- kmeansStep :: Clusters a -> Clusters a
-    kmeansStep clusters = 
-      case centroidsOf clusters of
-        centroids -> 
-            G.filter (not . null . elements)
-          . G.unsafeAccum clusterAdd (G.replicate k emptyCluster)
-          . map (pairToClosestCentroid centroids)
-          $ points
+    kmeansStep :: Clusters a -> (G.Vector c, Clusters a)
+    kmeansStep clusters =
+      let centroids = G.map centroidOf clusters
+      in  (,) centroids
+            $ G.filter (not . null . elements)
+            $ G.unsafeAccum clusterAdd (G.replicate k emptyCluster)
+            $ map (pairToClosestCentroid centroids) points
 
-    -- centroidsOf :: Clusters a -> Centroids
-    centroidsOf cs = G.map centroidOf cs
-      where
-
-        centroidOf (Cluster elts) = 
-            V.map (/n) 
-          . L.foldl1' addCentroids
-          $ map extract elts
-
-          where n = fromIntegral (length elts)
-
-    -- pairToClosestCentroid :: Centroids -> a -> (Int, a)
+    pairToClosestCentroid :: G.Vector c -> a -> (Int, a)
     pairToClosestCentroid cs a = (minDistIndex, a)
-      where !minDistIndex = G.minIndexBy (compare `on` dist (extract a)) cs
-
-    -- pgroupsEqualUnder :: Clusters a -> Clusters a -> Bool
-    pgroupsEqualUnder g1 g2 = 
-      G.map (map extract . elements) g1 == G.map (map extract . elements) g2
+      where !minDistIndex = G.minIndexBy (compare `on` dist a) cs
 {-# INLINE kmeansWith #-}
+
+-- | Use a coordinate vector as a centroid
+coordCentroid :: (a -> V.Vector Double) -> Cluster a -> V.Vector Double
+coordCentroid extract = \(Cluster elts) ->
+  V.map (/fromIntegral (length elts)) . L.foldl1' addCentroids $ map extract elts
+{-# INLINE coordCentroid #-}
