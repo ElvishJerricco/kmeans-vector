@@ -143,17 +143,17 @@ kmeansWith
   -> (a -> c -> d) -- ^ distance between a point and a centroid
   -> [a] -- ^ list of points
   -> Clusters a -- ^ resulting clustering
-kmeansWith initial centroidOf dist points = go (G.map centroidOf initial) initial
+kmeansWith initial centroidOf dist points = go Nothing initial
   
   where
     k :: Int
     k = G.length initial
 
-    go :: G.Vector c -> Clusters a -> Clusters a
+    go :: Maybe (G.Vector c) -> Clusters a -> Clusters a
     go centroids pgroups =
       case kmeansStep pgroups of
-        (centroids', pgroups') | centroids == centroids' -> pgroups
-                               | otherwise -> go centroids' pgroups' 
+        (centroids', pgroups') | centroids == Just centroids' -> pgroups
+                               | otherwise -> go (Just centroids') pgroups'
 
     kmeansStep :: Clusters a -> (G.Vector c, Clusters a)
     kmeansStep clusters =
